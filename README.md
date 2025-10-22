@@ -20,6 +20,8 @@
 
 This package allows you to view and control android device in realtime.
 
+__Matched for scrcpy server 3.3.3__
+
 ![demo gif](https://raw.githubusercontent.com/leng-yue/py-scrcpy-client/main/demo.gif)  
 
 Note: This gif is compressed and experience lower quality than actual.
@@ -38,8 +40,8 @@ Here is the document GitHub page: [Documentation](https://leng-yue.github.io/py-
 Also, you can check `scrcpy_ui/main.py` for a full functional demo.
 
 ## Contribution & Development
-Already implemented all functions in scrcpy server 1.20.  
-Please check scrcpy server 1.20 source code: [Link](https://github.com/Genymobile/scrcpy/tree/v1.20/server)
+Already implemented all functions in scrcpy server 3.3.3.  
+Please check scrcpy server 3.3.3 source code: [Link](https://github.com/Genymobile/scrcpy/tree/v3.3.3/server)
 
 ## Reference & Appreciation
 - Core: [scrcpy](https://github.com/Genymobile/scrcpy)
