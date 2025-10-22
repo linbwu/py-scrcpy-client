@@ -52,13 +52,13 @@
           </property>
          </widget>
         </item>
-        <item>
+        <!-- <item>
          <widget class="QCheckBox" name="flip">
           <property name="text">
            <string>Flip</string>
           </property>
          </widget>
-        </item>
+        </item> -->
         <item>
          <spacer name="horizontalSpacer_4">
           <property name="orientation">

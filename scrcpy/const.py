@@ -2,10 +2,19 @@
 This module includes all consts used in this project
 """
 
+# version
+SCRCPY_VERSION = "3.3.3"
+SCRCPY_LOCAL_NAME = "scrcpy-server"
+SCRCPY_JAR_NAME = "scrcpy-server.jar"
+
 # Action
 ACTION_DOWN = 0
 ACTION_UP = 1
 ACTION_MOVE = 2
+
+SC_COPY_KEY_NONE = 0
+SC_COPY_KEY_COPY = 1
+SC_COPY_KEY_CUT = 2
 
 # KeyCode
 KEYCODE_UNKNOWN = 0
@@ -294,6 +303,11 @@ KEYCODE_KEYCODE_REFRESH = 285
 KEYCODE_KEYCODE_THUMBS_UP = 286
 KEYCODE_KEYCODE_THUMBS_DOWN = 287
 
+META_NONE = 0
+META_SHIFT_ON = 1
+META_ALT_ON = 2
+META_SYM_ON = 4
+
 # Event
 EVENT_INIT = "init"
 EVENT_FRAME = "frame"
@@ -310,8 +324,12 @@ TYPE_EXPAND_SETTINGS_PANEL = 6
 TYPE_COLLAPSE_PANELS = 7
 TYPE_GET_CLIPBOARD = 8
 TYPE_SET_CLIPBOARD = 9
-TYPE_SET_SCREEN_POWER_MODE = 10
+TYPE_SET_DISPLAY_POWER = 10
 TYPE_ROTATE_DEVICE = 11
+
+# Clipboard Repsonse type
+TYPE_CLIPBOARD = 0
+TYPE_ACK_CLIPBOARD = 1
 
 # Lock screen orientation
 LOCK_SCREEN_ORIENTATION_UNLOCKED = -1
@@ -321,6 +339,28 @@ LOCK_SCREEN_ORIENTATION_1 = 1
 LOCK_SCREEN_ORIENTATION_2 = 2
 LOCK_SCREEN_ORIENTATION_3 = 3
 
-# Screen power mode
-POWER_MODE_OFF = 0
-POWER_MODE_NORMAL = 2
+# Constants that identify buttons that are associated with motion events.
+# Refer to the documentation on the MotionEvent class for descriptions of each button.
+# primary
+AMOTION_EVENT_BUTTON_PRIMARY = 1 << 0
+# secondary
+AMOTION_EVENT_BUTTON_SECONDARY = 1 << 1
+#  tertiary
+AMOTION_EVENT_BUTTON_TERTIARY = 1 << 2
+# back
+AMOTION_EVENT_BUTTON_BACK = 1 << 3
+# forward
+AMOTION_EVENT_BUTTON_FORWARD = 1 << 4
+AMOTION_EVENT_BUTTON_STYLUS_PRIMARY = 1 << 5
+AMOTION_EVENT_BUTTON_STYLUS_SECONDARY = 1 << 6
+
+
+SC_POINTER_ID_MOUSE = -1
+SC_POINTER_ID_GENERIC_FINGER = -2
+# Used for injecting an additional virtual pointer for pinch-to-zoom
+SC_POINTER_ID_VIRTUAL_FINGER = -3
+
+# SC_CONTROL_MSG_MAX_SIZE = 1 << 18  # 256 KB
+SC_CONTROL_MSG_INJECT_TEXT_MAX_LENGTH = 300
+# type: 1 byte; sequence: 8 bytes; paste flag: 1 byte; length: 4 bytes
+# SC_CONTROL_MSG_CLIPBOARD_MAX_LENGTH = SC_CONTROL_MSG_MAX_SIZE - 14

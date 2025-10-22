@@ -4,9 +4,10 @@ from typing import Optional
 from adbutils import adb
 from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent, QPixmap, Qt
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
-from ui_main import Ui_MainWindow
 
 import scrcpy
+
+from .ui_main import Ui_MainWindow
 
 if not QApplication.instance():
     app = QApplication([])
@@ -36,10 +37,10 @@ class MainWindow(QMainWindow):
         # Setup client
         self.client = scrcpy.Client(
             device=self.device,
-            flip=self.ui.flip.isChecked(),
-            bitrate=1000000000,
-            encoder_name=encoder_name,
-            max_fps=60,
+            # flip=self.ui.flip.isChecked(),
+            # bitrate=1000000000,
+            # encoder_name=encoder_name,
+            # max_fps=60,
         )
         self.client.add_listener(scrcpy.EVENT_INIT, self.on_init)
         self.client.add_listener(scrcpy.EVENT_FRAME, self.on_frame)
@@ -50,7 +51,7 @@ class MainWindow(QMainWindow):
 
         # Bind config
         self.ui.combo_device.currentTextChanged.connect(self.choose_device)
-        self.ui.flip.stateChanged.connect(self.on_flip)
+        # self.ui.flip.stateChanged.connect(self.on_flip)
 
         # Bind mouse event
         self.ui.label.mousePressEvent = self.on_mouse_event(scrcpy.ACTION_DOWN)
@@ -81,8 +82,8 @@ class MainWindow(QMainWindow):
         self.ui.combo_device.addItems(items)
         return items
 
-    def on_flip(self, _):
-        self.client.flip = self.ui.flip.isChecked()
+    # def on_flip(self, _):
+    # self.client.flip = self.ui.flip.isChecked()
 
     def on_click_home(self):
         self.client.control.keycode(scrcpy.KEYCODE_HOME, scrcpy.ACTION_DOWN)
@@ -94,13 +95,13 @@ class MainWindow(QMainWindow):
 
     def on_mouse_event(self, action=scrcpy.ACTION_DOWN):
         def handler(evt: QMouseEvent):
+            if self.client.resolution is None:
+                return
             focused_widget = QApplication.focusWidget()
             if focused_widget is not None:
                 focused_widget.clearFocus()
             ratio = self.max_width / max(self.client.resolution)
-            self.client.control.touch(
-                evt.position().x() / ratio, evt.position().y() / ratio, action
-            )
+            self.client.control.touch(evt.position().x() / ratio, evt.position().y() / ratio, action)
 
         return handler
 
@@ -149,13 +150,14 @@ class MainWindow(QMainWindow):
 
     def on_frame(self, frame):
         app.processEvents()
-        if frame is not None:
+        if frame is not None and self.client.resolution is not None:
             ratio = self.max_width / max(self.client.resolution)
+            data = frame.to_ndarray(format="bgr24")
             image = QImage(
-                frame,
-                frame.shape[1],
-                frame.shape[0],
-                frame.shape[1] * 3,
+                data,
+                data.shape[1],
+                data.shape[0],
+                data.shape[1] * 3,
                 QImage.Format_BGR888,
             )
             pix = QPixmap(image)

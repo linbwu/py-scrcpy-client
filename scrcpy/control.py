@@ -1,10 +1,17 @@
+"""control module for scrcpy client
+
+references:
+    https://github.com/Genymobile/scrcpy/blob/master/app/tests/test_control_msg_serialize.c
+    https://github.com/Genymobile/scrcpy/blob/master/app/src/control_msg.c
+    https://github.com/Genymobile/scrcpy/blob/master/app/src/input_manager.c
+"""
+
 import functools
 import socket
 import struct
 from time import sleep
 
-import scrcpy
-from scrcpy import const
+from . import const, calculate
 
 
 def inject(control_type: int):
@@ -30,12 +37,15 @@ def inject(control_type: int):
 
 
 class ControlSender:
+    """control sender class"""
+
     def __init__(self, parent):
         self.parent = parent
+        self._clipboard_sequence = 0
 
     @inject(const.TYPE_INJECT_KEYCODE)
     def keycode(
-        self, keycode: int, action: int = const.ACTION_DOWN, repeat: int = 0
+        self, keycode: int, action: int = const.ACTION_DOWN, repeat: int = 1, meta: int = const.META_NONE
     ) -> bytes:
         """
         Send keycode to device
@@ -44,8 +54,9 @@ class ControlSender:
             keycode: const.KEYCODE_*
             action: ACTION_DOWN | ACTION_UP
             repeat: repeat count
+            meta: const.META_NONE | META_SHIFT_ON | META_ALT_ON | META_SYM_ON
         """
-        return struct.pack(">Biii", action, keycode, repeat, 0)
+        return struct.pack(">Biii", action, keycode, repeat, meta)
 
     @inject(const.TYPE_INJECT_TEXT)
     def text(self, text: str) -> bytes:
@@ -61,11 +72,7 @@ class ControlSender:
 
     @inject(const.TYPE_INJECT_TOUCH_EVENT)
     def touch(
-        self,
-        x: int,
-        y: int,
-        action: int = const.ACTION_DOWN,
-        touch_id: int = 0x1234567887654321,
+        self, x: int, y: int, action: int = const.ACTION_DOWN, touch_id: int = const.SC_POINTER_ID_MOUSE
     ) -> bytes:
         """
         Touch screen
@@ -76,22 +83,39 @@ class ControlSender:
             action: ACTION_DOWN | ACTION_UP | ACTION_MOVE
             touch_id: Default using virtual id -1, you can specify it to emulate multi finger touch
         """
-        x, y = max(x, 0), max(y, 0)
+        if self.parent.resolution is None:
+            raise ValueError("Resolution is not known yet")
+        x, y = max(int(x), 0), max(int(y), 0)
         return struct.pack(
             ">BqiiHHHii",
             action,
             touch_id,
-            int(x),
-            int(y),
+            x,
+            y,
             int(self.parent.resolution[0]),
             int(self.parent.resolution[1]),
-            0xFFFF,
-            1,
-            1,
+            0xFFFF,  # pressure
+            const.AMOTION_EVENT_BUTTON_PRIMARY,
+            const.AMOTION_EVENT_BUTTON_PRIMARY,
         )
 
+    def click(self, x: int, y: int, duration: int = 200) -> None:
+        """
+        Click on screen
+
+        Args:
+            x: horizontal position
+            y: vertical position
+            duration: press duration in ms
+        :return:
+        """
+
+        self.touch(x, y, const.ACTION_DOWN)
+        sleep(duration / 1000)
+        self.touch(x, y, const.ACTION_UP)
+
     @inject(const.TYPE_INJECT_SCROLL_EVENT)
-    def scroll(self, x: int, y: int, h: int, v: int) -> bytes:
+    def scroll(self, x: int, y: int, h: int = 16, v: int = -16) -> bytes:
         """
         Scroll screen
 
@@ -101,16 +125,19 @@ class ControlSender:
             h: horizontal movement
             v: vertical movement
         """
+        if self.parent.resolution is None:
+            raise ValueError("Resolution is not known yet")
 
-        x, y = max(x, 0), max(y, 0)
+        x, y = max(int(x), 0), max(int(y), 0)
         return struct.pack(
-            ">iiHHii",
-            int(x),
-            int(y),
+            ">iiHHHHi",
+            x,
+            y,
             int(self.parent.resolution[0]),
             int(self.parent.resolution[1]),
-            int(h),
-            int(v),
+            calculate.float_toi16(h / 16.0),
+            calculate.float_toi16(v / 16.0),
+            const.AMOTION_EVENT_BUTTON_PRIMARY,
         )
 
     @inject(const.TYPE_BACK_OR_SCREEN_ON)
@@ -144,9 +171,13 @@ class ControlSender:
         """
         return b""
 
-    def get_clipboard(self) -> str:
+    def get_clipboard(self, timeout=2000) -> str:
         """
         Get clipboard
+
+        timeout: timeout in ms
+
+        clipboard_autosync must be disabled
         """
         # Since this function need socket response, we can't auto inject it any more
         s: socket.socket = self.parent.control_socket
@@ -162,11 +193,26 @@ class ControlSender:
             s.setblocking(True)
 
             # Read package
-            package = struct.pack(">B", const.TYPE_GET_CLIPBOARD)
+            package = struct.pack(">BB", const.TYPE_GET_CLIPBOARD, const.SC_COPY_KEY_COPY)
             s.send(package)
-            (code,) = struct.unpack(">B", s.recv(1))
-            assert code == 0
+
+            s.setblocking(False)
+            for _ in range(int(timeout / 200)):
+                try:
+                    (code,) = struct.unpack(">B", s.recv(1))
+                    break
+                except BlockingIOError:
+                    sleep(0.2)
+            else:
+                s.setblocking(True)
+                # timeout
+                return ""
+                # raise ConnectionError("Failed to connect scrcpy-server after 3 seconds")
+            s.setblocking(True)
+            assert code == const.TYPE_CLIPBOARD, "Invalid clipboard response code"
             (length,) = struct.unpack(">i", s.recv(4))
+            if length == 0:
+                return ""
 
             return s.recv(length).decode("utf-8")
 
@@ -180,17 +226,21 @@ class ControlSender:
             paste: paste now
         """
         buffer = text.encode("utf-8")
-        return struct.pack(">?i", paste, len(buffer)) + buffer
+        if len(buffer) > const.SC_CONTROL_MSG_INJECT_TEXT_MAX_LENGTH:
+            raise ValueError(f"Text length exceeds maximum {const.SC_CONTROL_MSG_INJECT_TEXT_MAX_LENGTH}")
 
-    @inject(const.TYPE_SET_SCREEN_POWER_MODE)
-    def set_screen_power_mode(self, mode: int = scrcpy.POWER_MODE_NORMAL) -> bytes:
+        self._clipboard_sequence += 1
+        return struct.pack(">q?i", self._clipboard_sequence, paste, len(buffer)) + buffer
+
+    @inject(const.TYPE_SET_DISPLAY_POWER)
+    def set_display_power(self, on: bool = True) -> bytes:
         """
-        Set screen power mode
+        Set display power
 
         Args:
-            mode: POWER_MODE_OFF | POWER_MODE_NORMAL
+            on: True for on, False for off(when wake_up is True, the screen will be turned on immediately)
         """
-        return struct.pack(">b", mode)
+        return struct.pack(">b", int(on))
 
     @inject(const.TYPE_ROTATE_DEVICE)
     def rotate_device(self) -> bytes:
@@ -220,37 +270,30 @@ class ControlSender:
             move_steps_delay: sleep seconds after each step
         :return:
         """
-
+        if not self.parent.resolution:
+            raise ValueError("Resolution is not known yet")
+        start_x, start_y = max(int(start_x), 0), max(int(start_y), 0)
         self.touch(start_x, start_y, const.ACTION_DOWN)
         next_x = start_x
         next_y = start_y
 
-        if end_x > self.parent.resolution[0]:
-            end_x = self.parent.resolution[0]
+        end_x, end_y = min(int(end_x), int(self.parent.resolution[0])), min(int(end_y), int(self.parent.resolution[1]))
 
-        if end_y > self.parent.resolution[1]:
-            end_y = self.parent.resolution[1]
-
-        decrease_x = True if start_x > end_x else False
-        decrease_y = True if start_y > end_y else False
+        decrease_x, decrease_y = start_x > end_x, start_y > end_y
         while True:
             if decrease_x:
                 next_x -= move_step_length
-                if next_x < end_x:
-                    next_x = end_x
+                next_x = max(next_x, end_x)
             else:
                 next_x += move_step_length
-                if next_x > end_x:
-                    next_x = end_x
+                next_x = min(next_x, end_x)
 
             if decrease_y:
                 next_y -= move_step_length
-                if next_y < end_y:
-                    next_y = end_y
+                next_y = max(next_y, end_y)
             else:
                 next_y += move_step_length
-                if next_y > end_y:
-                    next_y = end_y
+                next_y = min(next_y, end_y)
 
             self.touch(next_x, next_y, const.ACTION_MOVE)
 

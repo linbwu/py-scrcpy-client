@@ -27,9 +27,7 @@ class Ui_MainWindow(object):
         self.verticalLayout.setSizeConstraint(QLayout.SetFixedSize)
         self.horizontalLayout_4 = QHBoxLayout()
         self.horizontalLayout_4.setObjectName("horizontalLayout_4")
-        self.horizontalSpacer_3 = QSpacerItem(
-            40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum
-        )
+        self.horizontalSpacer_3 = QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
 
         self.horizontalLayout_4.addItem(self.horizontalSpacer_3)
 
@@ -44,14 +42,12 @@ class Ui_MainWindow(object):
 
         self.horizontalLayout_4.addWidget(self.combo_device)
 
-        self.flip = QCheckBox(self.centralwidget)
-        self.flip.setObjectName("flip")
+        # self.flip = QCheckBox(self.centralwidget)
+        # self.flip.setObjectName("flip")
 
-        self.horizontalLayout_4.addWidget(self.flip)
+        # self.horizontalLayout_4.addWidget(self.flip)
 
-        self.horizontalSpacer_4 = QSpacerItem(
-            40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum
-        )
+        self.horizontalSpacer_4 = QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
 
         self.horizontalLayout_4.addItem(self.horizontalSpacer_4)
 
@@ -73,9 +69,7 @@ class Ui_MainWindow(object):
         self.horizontalLayout.setSpacing(6)
         self.horizontalLayout.setObjectName("horizontalLayout")
         self.horizontalLayout.setSizeConstraint(QLayout.SetFixedSize)
-        self.horizontalSpacer = QSpacerItem(
-            40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum
-        )
+        self.horizontalSpacer = QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
 
         self.horizontalLayout.addItem(self.horizontalSpacer)
 
@@ -89,9 +83,7 @@ class Ui_MainWindow(object):
 
         self.horizontalLayout.addWidget(self.button_back)
 
-        self.horizontalSpacer_2 = QSpacerItem(
-            40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum
-        )
+        self.horizontalSpacer_2 = QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
 
         self.horizontalLayout.addItem(self.horizontalSpacer_2)
 
@@ -110,11 +102,9 @@ class Ui_MainWindow(object):
     # setupUi
 
     def retranslateUi(self, MainWindow):
-        MainWindow.setWindowTitle(
-            QCoreApplication.translate("MainWindow", "MainWindow", None)
-        )
+        MainWindow.setWindowTitle(QCoreApplication.translate("MainWindow", "MainWindow", None))
         self.label_2.setText(QCoreApplication.translate("MainWindow", "Device", None))
-        self.flip.setText(QCoreApplication.translate("MainWindow", "Flip", None))
+        # self.flip.setText(QCoreApplication.translate("MainWindow", "Flip", None))
         self.label.setText(
             QCoreApplication.translate(
                 "MainWindow",

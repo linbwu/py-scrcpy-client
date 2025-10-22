@@ -1,86 +1,62 @@
 import os
 import socket
-import struct
 import threading
 import time
 from time import sleep
-from typing import Any, Callable, Optional, Tuple, Union
+from typing import Any, Callable, Optional, Union, Tuple
 
-import numpy as np
-from adbutils import AdbConnection, AdbDevice, AdbError, Network, adb
-from av.codec import CodecContext
-from av.error import InvalidDataError
+from adbutils import AdbConnection, AdbDevice, AdbError, AdbTimeout, Network, adb
+from av import CodecContext, VideoFrame
 
 from .const import (
     EVENT_DISCONNECT,
     EVENT_FRAME,
     EVENT_INIT,
-    LOCK_SCREEN_ORIENTATION_UNLOCKED,
+    SCRCPY_VERSION,
+    SCRCPY_LOCAL_NAME,
+    SCRCPY_JAR_NAME,
 )
 from .control import ControlSender
 
 
 class Client:
+    """
+    Create a scrcpy client, this client won't be started until you call the start function
+
+    Args:
+        device: Android device, select first one if none, from serial if str
+        max_width: frame width that will be broadcast from android server
+        max_fps: maximum fps, 0 means not limited (supported after android 10)
+        bitrate: video_bit_rate
+        block_frame: only return nonempty frames, may block cv2 render thread
+        stay_awake: keep Android device awake
+        lock_screen_orientation: lock screen orientation, LOCK_SCREEN_ORIENTATION_*
+        connection_timeout: timeout for connection, unit is ms
+    """
+
     def __init__(
         self,
         device: Optional[Union[AdbDevice, str, any]] = None,
         max_width: int = 0,
         bitrate: int = 8000000,
         max_fps: int = 0,
-        flip: bool = False,
         block_frame: bool = False,
-        stay_awake: bool = False,
-        lock_screen_orientation: int = LOCK_SCREEN_ORIENTATION_UNLOCKED,
+        stay_awake: bool = True,
         connection_timeout: int = 3000,
-        encoder_name: Optional[str] = None,
-        codec_name: Optional[str] = None,
     ):
-        """
-        Create a scrcpy client, this client won't be started until you call the start function
-
-        Args:
-            device: Android device, select first one if none, from serial if str
-            max_width: frame width that will be broadcast from android server
-            bitrate: bitrate
-            max_fps: maximum fps, 0 means not limited (supported after android 10)
-            flip: flip the video
-            block_frame: only return nonempty frames
-            stay_awake: keep Android device awake
-            lock_screen_orientation: lock screen orientation, LOCK_SCREEN_ORIENTATION_*
-            connection_timeout: timeout for connection, unit is ms
-            encoder_name: encoder name, enum: [OMX.google.h264.encoder, OMX.qcom.video.encoder.avc, c2.qti.avc.encoder, c2.android.avc.encoder], default is None (Auto)
-            codec_name: codec name, enum: [h264, h265, av1], default is None (Auto)
-        """
         # Check Params
         assert max_width >= 0, "max_width must be greater than or equal to 0"
         assert bitrate >= 0, "bitrate must be greater than or equal to 0"
         assert max_fps >= 0, "max_fps must be greater than or equal to 0"
-        assert (
-            -1 <= lock_screen_orientation <= 3
-        ), "lock_screen_orientation must be LOCK_SCREEN_ORIENTATION_*"
-        assert (
-            connection_timeout >= 0
-        ), "connection_timeout must be greater than or equal to 0"
-        assert encoder_name in [
-            None,
-            "OMX.google.h264.encoder",
-            "OMX.qcom.video.encoder.avc",
-            "c2.qti.avc.encoder",
-            "c2.android.avc.encoder",
-        ]
-        assert codec_name in [None, "h264", "h265", "av1"]
+        assert connection_timeout >= 0, "connection_timeout must be greater than or equal to 0"
 
         # Params
-        self.flip = flip
         self.max_width = max_width
         self.bitrate = bitrate
         self.max_fps = max_fps
         self.block_frame = block_frame
         self.stay_awake = stay_awake
-        self.lock_screen_orientation = lock_screen_orientation
         self.connection_timeout = connection_timeout
-        self.encoder_name = encoder_name
-        self.codec_name = codec_name
 
         # Connect to device
         if device is None:
@@ -92,8 +68,9 @@ class Client:
         self.listeners = dict(frame=[], init=[], disconnect=[])
 
         # User accessible
-        self.last_frame: Optional[np.ndarray] = None
-        self.resolution: Optional[Tuple[int, int]] = None
+        self.last_frame: Optional[VideoFrame] = None
+        self.resolution: Optional[Tuple[int, int]] = None  # used in ControlSender
+        self.__frame_locker = threading.Lock()  # for last_frame access
         self.device_name: Optional[str] = None
         self.control = ControlSender(self)
 
@@ -102,7 +79,7 @@ class Client:
         self.__server_stream: Optional[AdbConnection] = None
         self.__video_socket: Optional[socket.socket] = None
         self.control_socket: Optional[socket.socket] = None
-        self.control_socket_lock = threading.Lock()
+        self.control_socket_lock = threading.Lock()  # used in ControlSender
 
         # Available if start with threaded or daemon_threaded
         self.stream_loop_thread = None
@@ -112,73 +89,76 @@ class Client:
         Connect to android server, there will be two sockets, video and control socket.
         This method will set: video_socket, control_socket, resolution variables
         """
-        for _ in range(self.connection_timeout // 100):
+        for _ in range(self.connection_timeout // 200):
             try:
-                self.__video_socket = self.device.create_connection(
-                    Network.LOCAL_ABSTRACT, "scrcpy"
-                )
+                self.__video_socket = self.device.create_connection(Network.LOCAL_ABSTRACT, "scrcpy")
                 break
             except AdbError:
-                sleep(0.1)
-                pass
+                sleep(0.2)
         else:
-            raise ConnectionError("Failed to connect scrcpy-server after 3 seconds")
+            raise ConnectionError(f"Failed to connect scrcpy-server after {self.connection_timeout}ms")
+
+        self.control_socket = self.device.create_connection(Network.LOCAL_ABSTRACT, "scrcpy")
 
         dummy_byte = self.__video_socket.recv(1)
-        if not len(dummy_byte) or dummy_byte != b"\x00":
-            raise ConnectionError("Did not receive Dummy Byte!")
+        if not dummy_byte or dummy_byte != b"\x00":
+            raise ConnectionError(f"Did not receive Dummy Byte! {dummy_byte}")
 
-        self.control_socket = self.device.create_connection(
-            Network.LOCAL_ABSTRACT, "scrcpy"
-        )
-        self.device_name = self.__video_socket.recv(64).decode("utf-8").rstrip("\x00")
-        if not len(self.device_name):
-            raise ConnectionError("Did not receive Device Name!")
-
-        res = self.__video_socket.recv(4)
-        self.resolution = struct.unpack(">HH", res)
         self.__video_socket.setblocking(False)
 
     def __deploy_server(self) -> None:
         """
         Deploy server to android device
         """
-        jar_name = "scrcpy-server.jar"
-        server_file_path = os.path.join(
-            os.path.abspath(os.path.dirname(__file__)), jar_name
-        )
-        self.device.sync.push(server_file_path, f"/data/local/tmp/{jar_name}")
+        remote_name = f"/data/local/tmp/{SCRCPY_JAR_NAME}"
+        server_file_path = os.path.join(os.path.abspath(os.path.dirname(__file__)), SCRCPY_LOCAL_NAME)
+        self.device.sync.push(server_file_path, remote_name)
         commands = [
-            f"CLASSPATH=/data/local/tmp/{jar_name}",
+            f"CLASSPATH={remote_name}",
             "app_process",
             "/",
             "com.genymobile.scrcpy.Server",
-            "2.4",  # Scrcpy server version
-            "log_level=info",
-            f"max_size={self.max_width}",
-            f"max_fps={self.max_fps}",
-            f"video_bit_rate={self.bitrate}",
-            f"video_encoder={self.encoder_name}"
-            if self.encoder_name
-            else "video_encoder=OMX.google.h264.encoder",
-            f"video_codec={self.codec_name}" if self.codec_name else "video_codec=h264",
-            "tunnel_forward=true",
-            "send_frame_meta=false",
-            "control=true",
-            "audio=false",
-            "show_touches=false",
-            "stay_awake=false",
-            "power_off_on_close=false",
-            "clipboard_autosync=false",
+            SCRCPY_VERSION,  # Scrcpy server version
+            "log_level=info",  # Log level: info, verbose...
+            "tunnel_forward=true",  # Tunnel forward
+            "video=true",  # Video enabled
+            "audio=false",  # Audio disabled
+            "control=true",  # Control enabled
+            "clipboard_autosync=false",  # Disable clipboard autosync
+            "stay_awake=true" if self.stay_awake else "stay_awake=false",  # Stay awake
+            "raw_stream=true",  # Use raw stream
+            "power_off_on_close=false",  # Power off screen after server closed
         ]
+        if self.max_width > 0:
+            commands.append(f"max_size={self.max_width}")  # Max screen width (long side)
+        if self.max_fps > 0:
+            commands.append(f"max_fps={self.max_fps}")  # Max frame per second
+        if self.bitrate > 0:
+            commands.append(f"video_bit_rate={self.bitrate}")  # Video bit rate
 
+        # print("Starting scrcpy server with command:", " ".join(commands))
         self.__server_stream: AdbConnection = self.device.shell(
             commands,
             stream=True,
         )
 
         # Wait for server to start
-        self.__server_stream.read(10)
+        buffer = bytearray()
+        while True:
+            try:
+                chunk = self.__server_stream.recv(1)
+                buffer.extend(chunk)
+                if b"\n" in chunk and b"INFO" in buffer:
+                    break
+            except AdbTimeout:
+                break
+
+        lines = buffer.decode(errors="ignore").splitlines()
+        for line in lines:
+            # maybe check "WARN" in line?
+            if "Device:" in line:
+                self.device_name = line.split("Device:")[-1].strip()
+                break
 
     def start(self, threaded: bool = False, daemon_threaded: bool = False) -> None:
         """
@@ -196,9 +176,7 @@ class Client:
         self.__send_to_listeners(EVENT_INIT)
 
         if threaded or daemon_threaded:
-            self.stream_loop_thread = threading.Thread(
-                target=self.__stream_loop, daemon=daemon_threaded
-            )
+            self.stream_loop_thread = threading.Thread(target=self.__stream_loop, daemon=daemon_threaded)
             self.stream_loop_thread.start()
         else:
             self.__stream_loop()
@@ -226,6 +204,19 @@ class Client:
             except Exception:
                 pass
 
+    def wait_for_ready(self, timeout: int = 5000) -> None:
+        """
+        Wait until client is alive
+
+        Args:
+            timeout: maximum wait time in ms, 0 means wait forever
+        """
+        start_time = time.time()
+        while not self.alive:
+            sleep(0.3)
+            if timeout and (time.time() - start_time) * 1000 > timeout:
+                raise TimeoutError("Wait for client alive timeout")
+
     def __stream_loop(self) -> None:
         """
         Core loop for video parsing
@@ -240,13 +231,12 @@ class Client:
                 for packet in packets:
                     frames = codec.decode(packet)
                     for frame in frames:
-                        frame = frame.to_ndarray(format="bgr24")
-                        if self.flip:
-                            frame = frame[:, ::-1, :]
-                        self.last_frame = frame
-                        self.resolution = (frame.shape[1], frame.shape[0])
+                        if not self.__frame_locker.locked():
+                            self.last_frame = frame
+                        if not self.resolution:
+                            self.resolution = (frame.width, frame.height)
                         self.__send_to_listeners(EVENT_FRAME, frame)
-            except (BlockingIOError, InvalidDataError):
+            except BlockingIOError:
                 time.sleep(0.01)
                 if not self.block_frame:
                     self.__send_to_listeners(EVENT_FRAME, None)
@@ -287,3 +277,17 @@ class Client:
         """
         for fun in self.listeners[cls]:
             fun(*args, **kwargs)
+
+    def screenshot(self, filepath: str):
+        """
+        Take a screenshot from the last frame
+        """
+        with self.__frame_locker:
+            if self.last_frame is not None:
+                dirname = os.path.dirname(filepath)
+                if dirname and not os.path.exists(dirname):
+                    os.makedirs(dirname)
+                self.last_frame.save(filepath)
+                return True
+
+        return False

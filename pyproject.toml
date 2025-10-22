@@ -17,7 +17,7 @@ py-scrcpy = "scrcpy_ui:main"
 [tool.poetry.dependencies]
 # Should match the python versions in .github/workflows/ci.yml and publish.yml
 python = ">=3.9,<3.13"
-av = "^12"
+av = "^16"
 numpy = "^2"
 adbutils = "^2"
 
