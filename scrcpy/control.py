@@ -9,6 +9,7 @@ references:
 import functools
 import socket
 import struct
+import math
 from time import sleep
 
 from . import const, calculate
@@ -41,7 +42,7 @@ class ControlSender:
 
     def __init__(self, parent):
         self.parent = parent
-        self._clipboard_sequence = 0
+        self._clipboard_sequence: int = 0
 
     @inject(const.TYPE_INJECT_KEYCODE)
     def keycode(
@@ -72,7 +73,12 @@ class ControlSender:
 
     @inject(const.TYPE_INJECT_TOUCH_EVENT)
     def touch(
-        self, x: int, y: int, action: int = const.ACTION_DOWN, touch_id: int = const.SC_POINTER_ID_MOUSE
+        self,
+        x: int,
+        y: int,
+        action: int = const.ACTION_DOWN,
+        touch_id: int = const.SC_POINTER_ID_MOUSE,
+        pressure: float = 1.0,
     ) -> bytes:
         """
         Touch screen
@@ -82,37 +88,25 @@ class ControlSender:
             y: vertical position
             action: ACTION_DOWN | ACTION_UP | ACTION_MOVE
             touch_id: Default using virtual id -1, you can specify it to emulate multi finger touch
+            pressure: 0.0 - 1.0
         """
         if self.parent.resolution is None:
             raise ValueError("Resolution is not known yet")
-        x, y = max(int(x), 0), max(int(y), 0)
+        max_x, max_y = int(self.parent.resolution[0]), int(self.parent.resolution[1])
+        x, y = min(max(int(x), 0), max_x), min(max(int(y), 0), max_y)
+
         return struct.pack(
             ">BqiiHHHii",
             action,
             touch_id,
             x,
             y,
-            int(self.parent.resolution[0]),
-            int(self.parent.resolution[1]),
-            0xFFFF,  # pressure
+            max_x,
+            max_y,
+            calculate.float_to_u16(int(pressure)),  # 0xFFFF,  # pressure
             const.AMOTION_EVENT_BUTTON_PRIMARY,
             const.AMOTION_EVENT_BUTTON_PRIMARY,
         )
-
-    def click(self, x: int, y: int, duration: int = 200) -> None:
-        """
-        Click on screen
-
-        Args:
-            x: horizontal position
-            y: vertical position
-            duration: press duration in ms
-        :return:
-        """
-
-        self.touch(x, y, const.ACTION_DOWN)
-        sleep(duration / 1000)
-        self.touch(x, y, const.ACTION_UP)
 
     @inject(const.TYPE_INJECT_SCROLL_EVENT)
     def scroll(self, x: int, y: int, h: int = 16, v: int = -16) -> bytes:
@@ -128,15 +122,17 @@ class ControlSender:
         if self.parent.resolution is None:
             raise ValueError("Resolution is not known yet")
 
-        x, y = max(int(x), 0), max(int(y), 0)
+        max_x, max_y = int(self.parent.resolution[0]), int(self.parent.resolution[1])
+        x, y = min(max(int(x), 0), max_x), min(max(int(y), 0), max_y)
+
         return struct.pack(
             ">iiHHHHi",
             x,
             y,
-            int(self.parent.resolution[0]),
-            int(self.parent.resolution[1]),
-            calculate.float_toi16(h / 16.0),
-            calculate.float_toi16(v / 16.0),
+            max_x,
+            max_y,
+            calculate.float_to_i16(h / 16.0),
+            calculate.float_to_i16(v / 16.0),
             const.AMOTION_EVENT_BUTTON_PRIMARY,
         )
 
@@ -175,7 +171,7 @@ class ControlSender:
         """
         Get clipboard
 
-        timeout: timeout in ms
+        timeout: timeout in milliseconds
 
         clipboard_autosync must be disabled
         """
@@ -190,25 +186,28 @@ class ControlSender:
                     s.recv(1024)
                 except BlockingIOError:
                     break
-            s.setblocking(True)
 
             # Read package
             package = struct.pack(">BB", const.TYPE_GET_CLIPBOARD, const.SC_COPY_KEY_COPY)
             s.send(package)
 
-            s.setblocking(False)
-            for _ in range(int(timeout / 200)):
-                try:
-                    (code,) = struct.unpack(">B", s.recv(1))
-                    break
-                except BlockingIOError:
-                    sleep(0.2)
-            else:
+            def _get_resp_code():
+                for _ in range(timeout // 200):
+                    try:
+                        (c,) = struct.unpack(">B", s.recv(1))
+                        return c
+                    except BlockingIOError:
+                        sleep(0.2)
+                else:
+                    raise TimeoutError
+
+            try:
+                code = _get_resp_code()
+            except TimeoutError:
+                raise TimeoutError(f"get clipboard timeout in {timeout}ms")
+            finally:
                 s.setblocking(True)
-                # timeout
-                return ""
-                # raise ConnectionError("Failed to connect scrcpy-server after 3 seconds")
-            s.setblocking(True)
+
             assert code == const.TYPE_CLIPBOARD, "Invalid clipboard response code"
             (length,) = struct.unpack(">i", s.recv(4))
             if length == 0:
@@ -255,8 +254,9 @@ class ControlSender:
         start_y: int,
         end_x: int,
         end_y: int,
-        move_step_length: int = 5,
-        move_steps_delay: float = 0.005,
+        delay: int = 0,
+        move_step_length: int = 10,
+        move_steps_delay: int = 5,
     ) -> None:
         """
         Swipe on screen
@@ -266,38 +266,34 @@ class ControlSender:
             start_y: start vertical position
             end_x: start horizontal position
             end_y: end vertical position
-            move_step_length: length per step
-            move_steps_delay: sleep seconds after each step
+            delay: press and hold milliseconds before move
+            move_step_length: length per step. If you want to swipe quickly, set this value higher, such as 40
+            move_steps_delay: sleep milliseconds after each step
         :return:
         """
         if not self.parent.resolution:
             raise ValueError("Resolution is not known yet")
-        start_x, start_y = max(int(start_x), 0), max(int(start_y), 0)
+        max_x, max_y = int(self.parent.resolution[0]), int(self.parent.resolution[1])
+        start_x, start_y = min(max(int(start_x), 0), max_x), min(max(int(start_y), 0), max_y)
+        end_x, end_y = min(max(int(end_x), 0), max_x), min(max(int(end_y), 0), max_y)
+
         self.touch(start_x, start_y, const.ACTION_DOWN)
-        next_x = start_x
-        next_y = start_y
+        sleep(max(int(delay), int(move_steps_delay)) / 1000)
 
-        end_x, end_y = min(int(end_x), int(self.parent.resolution[0])), min(int(end_y), int(self.parent.resolution[1]))
+        hypotenuse = math.sqrt((end_x - start_x) ** 2 + (end_y - start_y) ** 2)
+        steps_num = max(int(hypotenuse / move_step_length + 0.5), 1)
+        next_x, next_y = float(start_x), float(start_y)
+        step_x, step_y = (end_x - start_x) / steps_num, (end_y - start_y) / steps_num
 
-        decrease_x, decrease_y = start_x > end_x, start_y > end_y
-        while True:
-            if decrease_x:
-                next_x -= move_step_length
-                next_x = max(next_x, end_x)
-            else:
-                next_x += move_step_length
-                next_x = min(next_x, end_x)
+        # moving action steps
+        steps_num -= 1
+        for _ in range(steps_num):
+            next_x += step_x
+            next_y += step_y
+            self.touch(int(next_x), int(next_y), const.ACTION_MOVE)
+            sleep(move_steps_delay / 1000)
 
-            if decrease_y:
-                next_y -= move_step_length
-                next_y = max(next_y, end_y)
-            else:
-                next_y += move_step_length
-                next_y = min(next_y, end_y)
-
-            self.touch(next_x, next_y, const.ACTION_MOVE)
-
-            if next_x == end_x and next_y == end_y:
-                self.touch(next_x, next_y, const.ACTION_UP)
-                break
-            sleep(move_steps_delay)
+        # up action
+        next_x += step_x
+        next_y += step_y
+        self.touch(int(next_x), int(next_y), const.ACTION_UP)

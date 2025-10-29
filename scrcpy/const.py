@@ -341,15 +341,10 @@ LOCK_SCREEN_ORIENTATION_3 = 3
 
 # Constants that identify buttons that are associated with motion events.
 # Refer to the documentation on the MotionEvent class for descriptions of each button.
-# primary
 AMOTION_EVENT_BUTTON_PRIMARY = 1 << 0
-# secondary
 AMOTION_EVENT_BUTTON_SECONDARY = 1 << 1
-#  tertiary
 AMOTION_EVENT_BUTTON_TERTIARY = 1 << 2
-# back
 AMOTION_EVENT_BUTTON_BACK = 1 << 3
-# forward
 AMOTION_EVENT_BUTTON_FORWARD = 1 << 4
 AMOTION_EVENT_BUTTON_STYLUS_PRIMARY = 1 << 5
 AMOTION_EVENT_BUTTON_STYLUS_SECONDARY = 1 << 6

@@ -1,5 +1,6 @@
 import os
 import socket
+import logging
 import threading
 import time
 from time import sleep
@@ -43,6 +44,7 @@ class Client:
         block_frame: bool = False,
         stay_awake: bool = True,
         connection_timeout: int = 3000,
+        logger: logging.Logger = None,
     ):
         # Check Params
         assert max_width >= 0, "max_width must be greater than or equal to 0"
@@ -57,15 +59,16 @@ class Client:
         self.block_frame = block_frame
         self.stay_awake = stay_awake
         self.connection_timeout = connection_timeout
+        self._device = device
 
-        # Connect to device
-        if device is None:
-            device = adb.device_list()[0]
-        elif isinstance(device, str):
-            device = adb.device(serial=device)
+        self.logger = logger or logging.getLogger("scrcpy")
 
-        self.device = device
-        self.listeners = dict(frame=[], init=[], disconnect=[])
+        self.device: Optional[AdbDevice]  = None
+        self.listeners = {
+            EVENT_FRAME: [],
+            EVENT_INIT: [],
+            EVENT_DISCONNECT: [],
+        }
 
         # User accessible
         self.last_frame: Optional[VideoFrame] = None
@@ -84,11 +87,41 @@ class Client:
         # Available if start with threaded or daemon_threaded
         self.stream_loop_thread = None
 
+    def __del__(self):
+        self.stop()
+
+    @property
+    def serial(self) -> str:
+        """device serial"""
+        self.__init_device()
+        return self.device.serial
+
+    def __init_device(self) -> None:
+        """
+        Initialize device connection
+        """
+        if self.device:
+            return
+
+        # Connect to device
+        if self._device is None:
+            for dev in adb.iter_device():
+                self.device = dev
+                break
+        elif isinstance(self._device, str):
+            self.device = adb.device(serial=self._device)
+        elif isinstance(self._device, AdbDevice):
+            self.device = self._device
+        if self.device is None:
+            raise ConnectionError("No available device found")
+        self.logger.debug(f"adb device[{self.device.serial}] raedy")
+
     def __init_server_connection(self) -> None:
         """
         Connect to android server, there will be two sockets, video and control socket.
         This method will set: video_socket, control_socket, resolution variables
         """
+        self.logger.debug("connect video scocket...")
         for _ in range(self.connection_timeout // 200):
             try:
                 self.__video_socket = self.device.create_connection(Network.LOCAL_ABSTRACT, "scrcpy")
@@ -96,15 +129,25 @@ class Client:
             except AdbError:
                 sleep(0.2)
         else:
-            raise ConnectionError(f"Failed to connect scrcpy-server after {self.connection_timeout}ms")
+            raise ConnectionError(f"Failed to connect scrcpy-server within {self.connection_timeout}ms")
 
+        self.logger.debug("connect control scocket...")
         self.control_socket = self.device.create_connection(Network.LOCAL_ABSTRACT, "scrcpy")
 
-        dummy_byte = self.__video_socket.recv(1)
-        if not dummy_byte or dummy_byte != b"\x00":
-            raise ConnectionError(f"Did not receive Dummy Byte! {dummy_byte}")
-
         self.__video_socket.setblocking(False)
+        for _ in range(self.connection_timeout // 200):
+            try:
+                dummy_byte = self.__video_socket.recv(1)
+                break
+            except BlockingIOError:
+                sleep(0.2)
+        else:
+            raise TimeoutError("Receive Dummy Byte Timeout")
+
+        if not dummy_byte or dummy_byte != b"\x00":
+            raise ConnectionError(f"Unexpected Dummy Byte! {dummy_byte}")
+
+        self.logger.debug("all connections has ready")
 
     def __deploy_server(self) -> None:
         """
@@ -136,7 +179,7 @@ class Client:
         if self.bitrate > 0:
             commands.append(f"video_bit_rate={self.bitrate}")  # Video bit rate
 
-        # print("Starting scrcpy server with command:", " ".join(commands))
+        self.logger.debug(f"Starting scrcpy server with command:{' '.join(commands)}")
         self.__server_stream: AdbConnection = self.device.shell(
             commands,
             stream=True,
@@ -156,9 +199,11 @@ class Client:
         lines = buffer.decode(errors="ignore").splitlines()
         for line in lines:
             # maybe check "WARN" in line?
+            self.logger.debug(line)
             if "Device:" in line:
                 self.device_name = line.split("Device:")[-1].strip()
                 break
+        self.logger.debug("scrcpy server has ready")
 
     def start(self, threaded: bool = False, daemon_threaded: bool = False) -> None:
         """
@@ -170,9 +215,10 @@ class Client:
         """
         assert self.alive is False
 
+        self.resolution = None
+        self.__init_device()
         self.__deploy_server()
         self.__init_server_connection()
-        self.alive = True
         self.__send_to_listeners(EVENT_INIT)
 
         if threaded or daemon_threaded:
@@ -206,14 +252,14 @@ class Client:
 
     def wait_for_ready(self, timeout: int = 5000) -> None:
         """
-        Wait until client is alive
+        Wait until client receive one frame
 
         Args:
             timeout: maximum wait time in ms, 0 means wait forever
         """
         start_time = time.time()
-        while not self.alive:
-            sleep(0.3)
+        while not self.resolution:
+            sleep(0.2)
             if timeout and (time.time() - start_time) * 1000 > timeout:
                 raise TimeoutError("Wait for client alive timeout")
 
@@ -222,6 +268,7 @@ class Client:
         Core loop for video parsing
         """
         codec = CodecContext.create("h264", "r")
+        self.alive = True  # status change to alive
         while self.alive:
             try:
                 raw_h264 = self.__video_socket.recv(0x10000)
@@ -235,6 +282,7 @@ class Client:
                             self.last_frame = frame
                         if not self.resolution:
                             self.resolution = (frame.width, frame.height)
+                            self.logger.debug(f"resolution: {self.resolution}")
                         self.__send_to_listeners(EVENT_FRAME, frame)
             except BlockingIOError:
                 time.sleep(0.01)
@@ -278,16 +326,17 @@ class Client:
         for fun in self.listeners[cls]:
             fun(*args, **kwargs)
 
-    def screenshot(self, filepath: str):
+    def screenshot(self, filepath: str) -> bool:
         """
         Take a screenshot from the last frame
         """
         with self.__frame_locker:
             if self.last_frame is not None:
-                dirname = os.path.dirname(filepath)
+                fullpath = os.path.abspath(filepath)
+                dirname = os.path.dirname(fullpath)
                 if dirname and not os.path.exists(dirname):
                     os.makedirs(dirname)
-                self.last_frame.save(filepath)
+                self.last_frame.save(fullpath)
                 return True
 
         return False
