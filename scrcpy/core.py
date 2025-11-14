@@ -73,7 +73,7 @@ class Client:
         # User accessible
         self.last_frame: Optional[VideoFrame] = None
         self.resolution: Optional[Tuple[int, int]] = None  # used in ControlSender
-        self.__frame_locker = threading.Lock()  # for last_frame access
+        self._frame_locker = threading.Lock()  # for last_frame access
         self.device_name: Optional[str] = None
         self.control = ControlSender(self)
 
@@ -222,7 +222,7 @@ class Client:
         self.__send_to_listeners(EVENT_INIT)
 
         if threaded or daemon_threaded:
-            self.stream_loop_thread = threading.Thread(target=self.__stream_loop, daemon=daemon_threaded)
+            self.stream_loop_thread = threading.Thread(target=self.__stream_loop_silence, daemon=daemon_threaded)
             self.stream_loop_thread.start()
         else:
             self.__stream_loop()
@@ -250,7 +250,7 @@ class Client:
             except Exception:
                 pass
 
-    def wait_for_ready(self, timeout: int = 5000) -> None:
+    def wait_for_ready(self, timeout: int = 3000) -> None:
         """
         Wait until client receive one frame
 
@@ -278,7 +278,7 @@ class Client:
                 for packet in packets:
                     frames = codec.decode(packet)
                     for frame in frames:
-                        if not self.__frame_locker.locked():
+                        if not self._frame_locker.locked():
                             self.last_frame = frame
                         if not self.resolution:
                             self.resolution = (frame.width, frame.height)
@@ -293,6 +293,12 @@ class Client:
                     self.__send_to_listeners(EVENT_DISCONNECT)
                     self.stop()
                     raise e
+
+    def __stream_loop_silence(self):
+        try:
+            self.__stream_loop()
+        except (ConnectionError, OSError) as e:
+            self.logger.warning(e)
 
     def add_listener(self, cls: str, listener: Callable[..., Any]) -> None:
         """
@@ -330,7 +336,7 @@ class Client:
         """
         Take a screenshot from the last frame
         """
-        with self.__frame_locker:
+        with self._frame_locker:
             if self.last_frame is not None:
                 fullpath = os.path.abspath(filepath)
                 dirname = os.path.dirname(fullpath)
