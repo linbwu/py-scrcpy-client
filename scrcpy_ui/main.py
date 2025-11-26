@@ -1,13 +1,15 @@
+import os
+import time
 from argparse import ArgumentParser
 from typing import Optional
 
 from adbutils import adb
-from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent, QPixmap, Qt
-from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
+from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent, QPixmap  # pylint: disable=no-name-in-module
+from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QFileDialog  # pylint: disable=no-name-in-module
 
 import scrcpy
 
-from .ui_main import Ui_MainWindow
+from .ui import UI
 
 if not QApplication.instance():
     app = QApplication([])
@@ -16,16 +18,13 @@ else:
 
 
 class MainWindow(QMainWindow):
-    def __init__(
-        self,
-        max_width: Optional[int],
-        serial: Optional[str] = None,
-        encoder_name: Optional[str] = None,
-    ):
-        super(MainWindow, self).__init__()
-        self.ui = Ui_MainWindow()
-        self.ui.setupUi(self)
+    """main window frame"""
+
+    def __init__(self, max_width: Optional[int], serial: Optional[str] = None):
+        super().__init__()
+        self.ui = UI(self)
         self.max_width = max_width
+        self.img_path = ""
 
         # Setup devices
         self.devices = self.list_devices()
@@ -40,7 +39,7 @@ class MainWindow(QMainWindow):
             # flip=self.ui.flip.isChecked(),
             # bitrate=1000000000,
             # encoder_name=encoder_name,
-            # max_fps=60,
+            max_fps=30,
         )
         self.client.add_listener(scrcpy.EVENT_INIT, self.on_init)
         self.client.add_listener(scrcpy.EVENT_FRAME, self.on_frame)
@@ -48,6 +47,8 @@ class MainWindow(QMainWindow):
         # Bind controllers
         self.ui.button_home.clicked.connect(self.on_click_home)
         self.ui.button_back.clicked.connect(self.on_click_back)
+        self.ui.button_overview.clicked.connect(self.on_click_overview)
+        self.ui.button_screenshot.clicked.connect(self.on_click_screenshot)
 
         # Bind config
         self.ui.combo_device.currentTextChanged.connect(self.choose_device)
@@ -59,14 +60,15 @@ class MainWindow(QMainWindow):
         self.ui.label.mouseReleaseEvent = self.on_mouse_event(scrcpy.ACTION_UP)
 
         # Keyboard event
-        self.keyPressEvent = self.on_key_event(scrcpy.ACTION_DOWN)
-        self.keyReleaseEvent = self.on_key_event(scrcpy.ACTION_UP)
+        self.keyPressEvent = self.on_key_event(scrcpy.ACTION_DOWN)  # pylint: disable=invalid-name
+        self.keyReleaseEvent = self.on_key_event(scrcpy.ACTION_UP)  # pylint: disable=invalid-name
 
     def choose_device(self, device):
+        """on choice device"""
         if device not in self.devices:
-            msgBox = QMessageBox()
-            msgBox.setText(f"Device serial [{device}] not found!")
-            msgBox.exec()
+            msg_box = QMessageBox()
+            msg_box.setText(f"Device serial [{device}] not found!")
+            msg_box.exec()
             return
 
         # Ensure text
@@ -77,6 +79,7 @@ class MainWindow(QMainWindow):
             self.client.device = adb.device(serial=device)
 
     def list_devices(self):
+        """list adb devices"""
         self.ui.combo_device.clear()
         items = [i.serial for i in adb.device_list()]
         self.ui.combo_device.addItems(items)
@@ -86,14 +89,33 @@ class MainWindow(QMainWindow):
     # self.client.flip = self.ui.flip.isChecked()
 
     def on_click_home(self):
+        """click home"""
         self.client.control.keycode(scrcpy.KEYCODE_HOME, scrcpy.ACTION_DOWN)
         self.client.control.keycode(scrcpy.KEYCODE_HOME, scrcpy.ACTION_UP)
 
     def on_click_back(self):
+        """click back"""
         self.client.control.back_or_turn_screen_on(scrcpy.ACTION_DOWN)
         self.client.control.back_or_turn_screen_on(scrcpy.ACTION_UP)
 
+    def on_click_overview(self):
+        """click app switch"""
+        self.client.control.keycode(scrcpy.KEYCODE_APP_SWITCH, scrcpy.ACTION_DOWN)
+        self.client.control.keycode(scrcpy.KEYCODE_APP_SWITCH, scrcpy.ACTION_UP)
+
+    def on_click_screenshot(self):
+        """save screenshot"""
+        if not self.img_path:
+            self.img_path = QFileDialog.getExistingDirectory(self, "选择保存截图的文件夹")
+
+        # 检查是否选择了文件夹
+        if self.img_path:
+            filename = f"scrcpy_{time.strftime('%Y%m%d_%H%M%S')}.png"
+            self.client.screenshot(os.path.join(self.img_path, filename))
+
     def on_mouse_event(self, action=scrcpy.ACTION_DOWN):
+        """mouse event on frame"""
+
         def handler(evt: QMouseEvent):
             if self.client.resolution is None:
                 return
@@ -106,6 +128,8 @@ class MainWindow(QMainWindow):
         return handler
 
     def on_key_event(self, action=scrcpy.ACTION_DOWN):
+        """key event on frame"""
+
         def handler(evt: QKeyEvent):
             code = self.map_code(evt.key())
             if code != -1:
@@ -146,9 +170,11 @@ class MainWindow(QMainWindow):
         return -1
 
     def on_init(self):
+        """device init"""
         self.setWindowTitle(f"Serial: {self.client.device_name}")
 
     def on_frame(self, frame):
+        """frame event"""
         app.processEvents()
         if frame is not None and self.client.resolution is not None:
             ratio = self.max_width / max(self.client.resolution)
@@ -165,12 +191,15 @@ class MainWindow(QMainWindow):
             self.ui.label.setPixmap(pix)
             self.resize(1, 1)
 
-    def closeEvent(self, _):
+    def closeEvent(self, _):  # pylint: disable=invalid-name
+        """close event, overwrite"""
         self.client.stop()
         self.alive = False
 
 
 def main():
+    """main frame"""
+
     parser = ArgumentParser(description="A simple scrcpy client")
     parser.add_argument(
         "-m",
@@ -185,10 +214,9 @@ def main():
         type=str,
         help="Select device manually (device serial required)",
     )
-    parser.add_argument("--encoder_name", type=str, help="Encoder name to use")
     args = parser.parse_args()
 
-    m = MainWindow(args.max_width, args.device, args.encoder_name)
+    m = MainWindow(args.max_width, args.device)
     m.show()
 
     m.client.start()

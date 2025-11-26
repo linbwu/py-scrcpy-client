@@ -198,13 +198,12 @@ class ControlSender:
                         return c
                     except BlockingIOError:
                         sleep(0.2)
-                else:
-                    raise TimeoutError
+                raise TimeoutError
 
             try:
                 code = _get_resp_code()
-            except TimeoutError:
-                raise TimeoutError(f"get clipboard timeout in {timeout}ms")
+            except TimeoutError as e:
+                raise TimeoutError(f"get clipboard timeout in {timeout}ms") from e
             finally:
                 s.setblocking(True)
 
@@ -245,6 +244,53 @@ class ControlSender:
     def rotate_device(self) -> bytes:
         """
         Rotate device
+        """
+        return b""
+
+    @inject(const.TYPE_UHID_CREATE)
+    def huid_create(self, uid: int, vid: int, pid: int, text: str, data: list[int]) -> bytes:
+        """
+        uhid create
+        """
+        buffer = text.encode("utf-8")
+        return struct.pack(">3Hi", uid, vid, pid, len(buffer)) + buffer + struct.pack(">i", len(data)) + bytes(data)
+
+    @inject(const.TYPE_UHID_INPUT)
+    def huid_input(self, uid: int, data: list[int]) -> bytes:
+        """
+        uhid input data
+        """
+        return struct.pack(">Hi", uid, len(data)) + bytes(data)
+
+    @inject(const.TYPE_UHID_DESTROY)
+    def huid_destroy(self, uid: int) -> bytes:
+        """
+        uhid destroy
+        """
+        return struct.pack(">H", uid)
+
+    @inject(const.TYPE_OPEN_HARD_KEYBOARD_SETTINGS)
+    def open_hard_keyboard_setting(self) -> bytes:
+        """
+        open hard keyboard setting
+        """
+        return b""
+
+    @inject(const.TYPE_START_APP)
+    def start_app(self, package_name: str) -> bytes:
+        """
+        Start app
+        +name: force stop before start app(name)
+        ?name: search app with name, just open app when only one found
+        name: start app with name
+        """
+        utf8_package_name = package_name.encode("utf-8")
+        return struct.pack(">b", len(utf8_package_name)) + utf8_package_name
+
+    @inject(const.TYPE_RESET_VIDEO)
+    def reset_video(self) -> bytes:
+        """
+        reset video
         """
         return b""
 

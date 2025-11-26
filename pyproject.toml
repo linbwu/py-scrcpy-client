@@ -1,8 +1,8 @@
 [tool.poetry]
 name = "scrcpy-client"
-version = "0.4.7"
+version = "0.5.3"
 description = "A client of scrcpy"
-authors = ["lengyue <lengyue@lengyue.me>"]
+authors = ["lengyue <lengyue@lengyue.me>", "linbwu <linb.wu@gmail.com>"]
 readme = "README.md"
 repository = "https://github.com/leng-yue/py-scrcpy-client"
 license = "MIT"
@@ -16,7 +16,7 @@ py-scrcpy = "scrcpy_ui:main"
 
 [tool.poetry.dependencies]
 # Should match the python versions in .github/workflows/ci.yml and publish.yml
-python = ">=3.9,<3.13"
+python = ">=3.9"
 av = "^16"
 numpy = "^2"
 adbutils = "^2"
