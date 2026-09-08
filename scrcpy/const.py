@@ -3,7 +3,7 @@ This module includes all consts used in this project
 """
 
 # version
-SCRCPY_VERSION = "3.3.3"
+SCRCPY_VERSION = "3.3.4"
 SCRCPY_LOCAL_NAME = "scrcpy-server"
 SCRCPY_JAR_NAME = "scrcpy-server.jar"
 
@@ -310,6 +310,7 @@ META_SYM_ON = 4
 
 # Event
 EVENT_INIT = "init"
+EVENT_H264 = "h264"
 EVENT_FRAME = "frame"
 EVENT_DISCONNECT = "disconnect"
 

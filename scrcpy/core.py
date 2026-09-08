@@ -11,6 +11,7 @@ from av import CodecContext, VideoFrame
 
 from .const import (
     EVENT_DISCONNECT,
+    EVENT_H264,
     EVENT_FRAME,
     EVENT_INIT,
     SCRCPY_VERSION,
@@ -63,8 +64,9 @@ class Client:
 
         self.logger = logger or logging.getLogger("scrcpy")
 
-        self.device: Optional[AdbDevice]  = None
+        self.device: Optional[AdbDevice] = None
         self.listeners = {
+            EVENT_H264: [],
             EVENT_FRAME: [],
             EVENT_INIT: [],
             EVENT_DISCONNECT: [],
@@ -274,6 +276,7 @@ class Client:
                 raw_h264 = self.__video_socket.recv(0x10000)
                 if raw_h264 == b"":
                     raise ConnectionError("Video stream is disconnected")
+                self.__send_to_listeners(EVENT_H264, raw_h264)
                 packets = codec.parse(raw_h264)
                 for packet in packets:
                     frames = codec.decode(packet)
@@ -336,6 +339,8 @@ class Client:
         """
         Take a screenshot from the last frame
         """
+        if not self.alive:
+            raise ConnectionAbortedError("scrcpy disconnect")
         with self._frame_locker:
             if self.last_frame is not None:
                 fullpath = os.path.abspath(filepath)

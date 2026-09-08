@@ -10,10 +10,9 @@ from PySide6.QtWidgets import (  # pylint: disable=no-name-in-module
     QVBoxLayout,
     QComboBox,
     QPushButton,
-    QSpacerItem,
-    QSizePolicy,
     QMainWindow,
 )
+from scrcpy.const import SCRCPY_VERSION
 
 
 class UI:
@@ -22,7 +21,7 @@ class UI:
     def __init__(self, parent: QMainWindow):
         if not parent.objectName():
             parent.setObjectName("MainWindow")
-        parent.resize(523, 566)
+        parent.resize(200, 320)
 
         self.central_widget = QWidget(parent)
         self.central_widget.setObjectName("central_widget")
@@ -44,8 +43,9 @@ class UI:
         """header layout"""
         layout = QHBoxLayout()
         layout.setObjectName("layout_header")
+        layout.addStretch()
 
-        layout.addItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        # layout.addItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
 
         self.label_device = QLabel(self.central_widget)
         self.label_device.setObjectName("label_device")
@@ -61,8 +61,14 @@ class UI:
         # self.flip = QCheckBox(self.centralwidget)
         # self.flip.setObjectName("flip")
         # layout.addWidget(self.flip)
+        # layout.addItem(QSpacerItem(8, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        self.label_version = QLabel(self.central_widget)
+        self.label_version.setObjectName("label_version")
 
-        layout.addItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        layout.addWidget(self.label_version)
+
+        layout.addStretch()
+
         return layout
 
     def body(self):
@@ -85,7 +91,8 @@ class UI:
         layout.setObjectName("layout_bottom")
         layout.setSizeConstraint(QLayout.SetFixedSize)
 
-        layout.addItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        layout.addStretch()
+        # layout.addItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
 
         self.button_home = QPushButton(self.central_widget)
         self.button_home.setObjectName("button_home")
@@ -103,13 +110,15 @@ class UI:
         self.button_screenshot.setObjectName("button_screenshot")
         layout.addWidget(self.button_screenshot)
 
-        layout.addItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        layout.addStretch()
+        # layout.addItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
         return layout
 
     def translate(self, parent: QMainWindow):
         """translate text"""
         parent.setWindowTitle(QCoreApplication.translate("MainWindow", "MainWindow", None))
         self.label_device.setText(QCoreApplication.translate("MainWindow", "Device", None))
+        self.label_version.setText(QCoreApplication.translate("MainWindow", f"v{SCRCPY_VERSION}", None))
         # self.flip.setText(QCoreApplication.translate("MainWindow", "Flip", None))
         self.label.setText(
             QCoreApplication.translate(

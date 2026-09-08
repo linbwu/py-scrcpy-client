@@ -1,11 +1,17 @@
 import os
 import time
+import struct
+import socket
+import threading
 from argparse import ArgumentParser
 from typing import Optional
 
+from av import CodecContext
 from adbutils import adb
+
 from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent, QPixmap  # pylint: disable=no-name-in-module
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QFileDialog  # pylint: disable=no-name-in-module
+from PySide6.QtCore import Signal, QObject  # pylint: disable=no-name-in-module
 
 import scrcpy
 
@@ -17,28 +23,136 @@ else:
     app = QApplication.instance()
 
 
+class TCPVideoReceiver(QObject):
+    """Receive raw H264 video via TCP and emit decoded frames."""
+
+    frame_received = Signal(object)
+
+    def __init__(self, port: int):
+        super().__init__()
+        self.port = port
+        self.alive = False
+        self._socket: Optional[socket.socket] = None
+        self._conn: Optional[socket.socket] = None
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        """Start listening for TCP H264 stream."""
+        self.alive = True
+        self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._socket.bind(("127.0.0.1", self.port))
+        self._socket.listen(1)
+        self._socket.settimeout(0.5)
+        self._thread = threading.Thread(target=self._receive_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Stop the TCP receiver."""
+        self.alive = False
+        if self._conn:
+            try:
+                self._conn.close()
+            except OSError:
+                pass
+            self._conn = None
+        if self._socket:
+            try:
+                self._socket.close()
+            except OSError:
+                pass
+
+    def _recv_exact(self, n: int) -> Optional[bytes]:
+        """Receive exactly n bytes from the connection."""
+        data = b""
+        while len(data) < n:
+            try:
+                chunk = self._conn.recv(n - len(data))
+                if not chunk:
+                    return None
+                data += chunk
+            except socket.timeout:
+                if not self.alive:
+                    return None
+                continue
+            except socket.error:
+                return None
+
+        return data
+
+    def _receive_loop(self) -> None:
+        """Main loop: accept TCP connection and decode H264 frames."""
+        codec = CodecContext.create("h264", "r")
+        while self.alive:
+            # Accept incoming TCP connection
+            try:
+                self._conn, _ = self._socket.accept()
+                self._conn.settimeout(0.5)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+
+            # Read framed messages from the connection
+            while self.alive:
+                header = self._recv_exact(4)
+                if header is None:
+                    break
+                msg_len = struct.unpack(">I", header)[0]
+
+                msg = self._recv_exact(msg_len)
+                if msg is None:
+                    break
+
+                packets = codec.parse(msg)
+                for packet in packets:
+                    try:
+                        frames = codec.decode(packet)
+                        for frame in frames:
+                            self.frame_received.emit(frame)
+                    except Exception:
+                        # Mid-stream join: decoder lacks SPS/PPS config,
+                        # skip until IDR with parameter sets arrives.
+                        continue
+
+            # Connection closed, clean up
+            if self._conn:
+                try:
+                    self._conn.close()
+                except OSError:
+                    pass
+                print("client has disconnect")
+                self._conn = None
+
+
 class MainWindow(QMainWindow):
     """main window frame"""
 
-    def __init__(self, max_width: Optional[int], serial: Optional[str] = None):
+    def __init__(self, max_width: Optional[int], serial: Optional[str] = None, tcp_port: Optional[int] = None):
         super().__init__()
         self.ui = UI(self)
         self.max_width = max_width
         self.img_path = ""
+        self.alive = True
+        self.resolution = None
+        self.last_frame = None
 
+        if tcp_port is not None:
+            self._init_tcp_mode(tcp_port)
+        else:
+            self._init_adb_mode(serial)
+
+    def _init_adb_mode(self, serial: Optional[str]) -> None:
+        """Initialize ADB/scrcpy mode."""
         # Setup devices
         self.devices = self.list_devices()
         if serial:
             self.choose_device(serial)
         self.device = adb.device(serial=self.ui.combo_device.currentText())
-        self.alive = True
 
         # Setup client
         self.client = scrcpy.Client(
             device=self.device,
-            # flip=self.ui.flip.isChecked(),
-            # bitrate=1000000000,
-            # encoder_name=encoder_name,
             max_fps=30,
         )
         self.client.add_listener(scrcpy.EVENT_INIT, self.on_init)
@@ -52,7 +166,6 @@ class MainWindow(QMainWindow):
 
         # Bind config
         self.ui.combo_device.currentTextChanged.connect(self.choose_device)
-        # self.ui.flip.stateChanged.connect(self.on_flip)
 
         # Bind mouse event
         self.ui.label.mousePressEvent = self.on_mouse_event(scrcpy.ACTION_DOWN)
@@ -60,8 +173,23 @@ class MainWindow(QMainWindow):
         self.ui.label.mouseReleaseEvent = self.on_mouse_event(scrcpy.ACTION_UP)
 
         # Keyboard event
-        self.keyPressEvent = self.on_key_event(scrcpy.ACTION_DOWN)  # pylint: disable=invalid-name
-        self.keyReleaseEvent = self.on_key_event(scrcpy.ACTION_UP)  # pylint: disable=invalid-name
+        self.keyPressEvent = self.on_key_event(scrcpy.ACTION_DOWN)
+        self.keyReleaseEvent = self.on_key_event(scrcpy.ACTION_UP)
+
+    def _init_tcp_mode(self, tcp_port: int) -> None:
+        """Initialize TCP video receiver mode."""
+        self.setWindowTitle(f"TCP Video Receiver (port: {tcp_port})")
+        self.tcp_receiver = TCPVideoReceiver(tcp_port)
+        self.tcp_receiver.frame_received.connect(self._on_tcp_frame)
+
+        # ADB control buttons are not needed in TCP mode
+        self.ui.button_home.setEnabled(False)
+        self.ui.button_back.setEnabled(False)
+        self.ui.button_overview.setEnabled(False)
+        self.ui.combo_device.setEnabled(False)
+
+        # Screenshot still works via last_frame
+        self.ui.button_screenshot.clicked.connect(self._on_tcp_screenshot)
 
     def choose_device(self, device):
         """on choice device"""
@@ -91,16 +219,19 @@ class MainWindow(QMainWindow):
     def on_click_home(self):
         """click home"""
         self.client.control.keycode(scrcpy.KEYCODE_HOME, scrcpy.ACTION_DOWN)
+        time.sleep(0.05)
         self.client.control.keycode(scrcpy.KEYCODE_HOME, scrcpy.ACTION_UP)
 
     def on_click_back(self):
         """click back"""
         self.client.control.back_or_turn_screen_on(scrcpy.ACTION_DOWN)
+        time.sleep(0.05)
         self.client.control.back_or_turn_screen_on(scrcpy.ACTION_UP)
 
     def on_click_overview(self):
         """click app switch"""
         self.client.control.keycode(scrcpy.KEYCODE_APP_SWITCH, scrcpy.ACTION_DOWN)
+        time.sleep(0.05)
         self.client.control.keycode(scrcpy.KEYCODE_APP_SWITCH, scrcpy.ACTION_UP)
 
     def on_click_screenshot(self):
@@ -177,7 +308,7 @@ class MainWindow(QMainWindow):
         """frame event"""
         app.processEvents()
         if frame is not None and self.client.resolution is not None:
-            ratio = self.max_width / max(self.client.resolution)
+            ratio = min(1, self.max_width / max(self.client.resolution))
             data = frame.to_ndarray(format="bgr24")
             image = QImage(
                 data,
@@ -191,9 +322,43 @@ class MainWindow(QMainWindow):
             self.ui.label.setPixmap(pix)
             self.resize(1, 1)
 
+    def _on_tcp_frame(self, frame):
+        """Handle decoded frame from TCP receiver."""
+        if self.resolution is None:
+            self.resolution = (frame.width, frame.height)
+        self.last_frame = frame
+        app.processEvents()
+        if self.resolution is not None:
+            ratio = min(1, self.max_width / max(self.resolution))
+            data = frame.to_ndarray(format="bgr24")
+            image = QImage(
+                data,
+                data.shape[1],
+                data.shape[0],
+                data.shape[1] * 3,
+                QImage.Format_BGR888,
+            )
+            pix = QPixmap(image)
+            pix.setDevicePixelRatio(1 / ratio)
+            self.ui.label.setPixmap(pix)
+            self.resize(1, 1)
+
+    def _on_tcp_screenshot(self):
+        """Save screenshot from TCP stream."""
+        if self.last_frame is None:
+            return
+        if not self.img_path:
+            self.img_path = QFileDialog.getExistingDirectory(self, "选择保存截图的文件夹")
+        if self.img_path:
+            filename = f"scrcpy_{time.strftime('%Y%m%d_%H%M%S')}.png"
+            self.last_frame.save(os.path.abspath(os.path.join(self.img_path, filename)))
+
     def closeEvent(self, _):  # pylint: disable=invalid-name
         """close event, overwrite"""
-        self.client.stop()
+        if hasattr(self, "client"):
+            self.client.stop()
+        if hasattr(self, "tcp_receiver"):
+            self.tcp_receiver.stop()
         self.alive = False
 
 
@@ -214,14 +379,31 @@ def main():
         type=str,
         help="Select device manually (device serial required)",
     )
+    parser.add_argument(
+        "-t",
+        "--tcp",
+        type=int,
+        default=None,
+        help="TCP port to receive raw H264 video stream (127.0.0.1:<port>)",
+    )
     args = parser.parse_args()
 
-    m = MainWindow(args.max_width, args.device)
+    m = MainWindow(args.max_width, args.device, args.tcp)
     m.show()
 
-    m.client.start()
-    while m.alive:
+    if args.tcp is not None:
+        # TCP mode: start receiver and run Qt event loop
+        m.tcp_receiver.start()
+        app.exec()
+    else:
+        # ADB mode: original scrcpy client loop with auto-reconnect
         m.client.start()
+        while m.alive:
+            try:
+                m.client.start()
+            except (ConnectionError, OSError) as e:
+                print(f"Connection lost: {e}, retrying in 1s...")
+                time.sleep(1)
 
 
 if __name__ == "__main__":

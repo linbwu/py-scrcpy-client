@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "scrcpy-client"
-version = "0.5.3"
+version = "0.5.6"
 description = "A client of scrcpy"
 authors = ["lengyue <lengyue@lengyue.me>", "linbwu <linb.wu@gmail.com>"]
 readme = "README.md"
